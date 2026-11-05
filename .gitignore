@@ -1,0 +1,41 @@
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Python cache & artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local databases & logs
+*.db
+*.db-journal
+*.log
+
+# Excel temporary and backup files
+*.tmp.xlsx
+*.bak.xlsx
+output/
+uploads/
+
+# Sample sensitive invoices & documents
+samples inv/
+*.pdf
+
+# Archive files
+*.zip
+*.tar.gz
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE / agent directories
+.agents/
+.claude/
