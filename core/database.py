@@ -233,8 +233,9 @@ class Database:
                 INSERT INTO invoice_records (
                     file_name, relative_path, file_hash, processing_status,
                     review_status, error_message, model_used, execution_time,
-                    is_math_valid, validation_flags, fields_data, raw_response
-                ) VALUES (?, ?, ?, 'FAILED', 'REJECTED', ?, ?, 0.0, 0, ?, '{}', '{}')
+                    is_math_valid, validation_flags, fields_data, raw_response,
+                    financial_status
+                ) VALUES (?, ?, ?, 'FAILED', 'REJECTED', ?, ?, 0.0, 0, ?, '{}', '{}', 'INCOMPLETE')
             """, (
                 file_name,
                 relative_path,
@@ -859,11 +860,11 @@ class Database:
             approved = cursor.fetchone()[0]
             cursor.execute("SELECT COUNT(*) FROM invoice_records WHERE review_status = 'REJECTED'")
             rejected = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM invoice_records WHERE financial_status = 'VERIFIED'")
+            cursor.execute("SELECT COUNT(*) FROM invoice_records WHERE financial_status = 'VERIFIED' AND processing_status = 'SUCCESS'")
             fin_verified = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM invoice_records WHERE financial_status = 'INCOMPLETE'")
+            cursor.execute("SELECT COUNT(*) FROM invoice_records WHERE (financial_status = 'INCOMPLETE' OR processing_status = 'FAILED')")
             fin_incomplete = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM invoice_records WHERE financial_status = 'MISMATCH'")
+            cursor.execute("SELECT COUNT(*) FROM invoice_records WHERE financial_status = 'MISMATCH' AND processing_status = 'SUCCESS'")
             fin_mismatch = cursor.fetchone()[0]
             cursor.execute("SELECT COUNT(*) FROM invoice_records WHERE review_status = 'APPROVED' AND processing_status = 'SUCCESS' AND (export_status IS NULL OR export_status != 'EXPORTED')")
             awaiting_export = cursor.fetchone()[0]

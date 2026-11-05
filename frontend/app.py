@@ -216,7 +216,9 @@ def load_db_records(limit=200):
             rec.is_invoice_duplicate = bool(r.get("is_invoice_duplicate", 0) or r.get("is_duplicate", 0))
             rec.duplicate_reason = r.get("duplicate_reason")
             rec.error_message = r.get("error_message")
-            if r.get("financial_status"):
+            if rec.processing_status == "FAILED":
+                rec.financial_audit.status = "INCOMPLETE"
+            elif r.get("financial_status"):
                 rec.financial_audit.status = r["financial_status"]
             records.append(rec)
     return records
@@ -240,13 +242,14 @@ with tab_upload:
             prog = st.progress(0)
             status = st.empty()
 
+            upload_results = []
             for i, uf in enumerate(uploaded_files):
                 status.text(f"Processing ({i+1}/{len(uploaded_files)}): {uf.name}")
                 dest_path = upload_dir / uf.name
                 with open(dest_path, "wb") as f:
                     f.write(uf.getbuffer())
 
-                pipeline.process_single_invoice(
+                u_rec = pipeline.process_single_invoice(
                     file_path=dest_path,
                     relative_path=uf.name,
                     folder_context=folder_ctx,
@@ -254,11 +257,21 @@ with tab_upload:
                     skip_if_processed=skip_processed,
                     auto_save_excel=False
                 )
+                upload_results.append(u_rec)
                 prog.progress((i + 1) / len(uploaded_files))
 
             status.empty()
             prog.empty()
-            st.success("Processing complete! Go to the '🧐 Invoice Review & Approval' tab to review extracted values.")
+            failed_uploads = [r for r in upload_results if r.processing_status == "FAILED"]
+            if failed_uploads:
+                st.error(f"⚠️ {len(failed_uploads)} of {len(upload_results)} uploaded document(s) failed extraction.")
+                with st.expander("View Failure Details", expanded=True):
+                    for fr in failed_uploads:
+                        st.markdown(f"**{fr.file_name}**: `{fr.error_message}`")
+                    if any("429" in str(fr.error_message or "") or "RESOURCE_EXHAUSTED" in str(fr.error_message or "") for fr in failed_uploads):
+                        st.warning("⏳ **Google Gemini API Rate Limit / Quota Exceeded (HTTP 429):** Free tier limit (20 requests/day per model) reached. Check your Gemini API billing plan or configure a new key in `.env`.")
+            else:
+                st.success("Processing complete! Go to the '🧐 Invoice Review & Approval' tab to review extracted values.")
 
     with col2:
         st.subheader("Recursive Directory Batch Processing")
@@ -275,9 +288,10 @@ with tab_upload:
                 status = st.empty()
 
                 target_batch = discovered[:batch_count]
+                batch_results = []
                 for idx, (abs_path, rel_path) in enumerate(target_batch):
                     status.text(f"Processing ({idx+1}/{len(target_batch)}): {rel_path}")
-                    pipeline.process_single_invoice(
+                    b_rec = pipeline.process_single_invoice(
                         file_path=abs_path,
                         relative_path=rel_path,
                         folder_context=Path(rel_path).parent.as_posix(),
@@ -285,11 +299,21 @@ with tab_upload:
                         skip_if_processed=skip_processed,
                         auto_save_excel=False
                     )
+                    batch_results.append(b_rec)
                     prog.progress((idx + 1) / len(target_batch))
 
                 status.empty()
                 prog.empty()
-                st.success("Batch completed! Records logged to SQLite. Please review in Tab 2.")
+                failed_batches = [r for r in batch_results if r.processing_status == "FAILED"]
+                if failed_batches:
+                    st.error(f"⚠️ {len(failed_batches)} of {len(batch_results)} document(s) failed extraction.")
+                    with st.expander("View Failure Details", expanded=True):
+                        for fr in failed_batches:
+                            st.markdown(f"**{fr.file_name}**: `{fr.error_message}`")
+                        if any("429" in str(fr.error_message or "") or "RESOURCE_EXHAUSTED" in str(fr.error_message or "") for fr in failed_batches):
+                            st.warning("⏳ **Google Gemini API Rate Limit / Quota Exceeded (HTTP 429):** Free tier limit (20 requests/day per model) reached. Check your Gemini API billing plan or configure a new key in `.env`.")
+                else:
+                    st.success("Batch completed! Records logged to SQLite. Please review in Tab 2.")
 
 # --- TAB 2: INVOICE REVIEW & APPROVAL WORKFLOW ---
 with tab_review:
@@ -396,6 +420,7 @@ with tab_review:
                 "Invoice Date": dt_val,
                 "Taxable Value": tax_val,
                 "Invoice Amount": tot_val,
+                "Processing": r.processing_status,
                 "Financial Status": r.financial_audit.status,
                 "Review Status": r.review_status,
                 "Export Status": r.export_status,
@@ -474,6 +499,11 @@ with tab_review:
         
         rec = next((r for r in filtered_records if r.id == detail_id), None)
         if rec:
+            if rec.processing_status == "FAILED" or rec.error_message:
+                st.error(f"🚨 **Processing / Extraction Failure for this Document:**\n\n`{rec.error_message}`")
+                if "429" in str(rec.error_message or "") or "RESOURCE_EXHAUSTED" in str(rec.error_message or ""):
+                    st.warning("⏳ **Google Gemini API Free Tier Quota Exceeded (HTTP 429):** The daily request limit on the free tier (20 requests/day) has been reached. Please check your Gemini API plan, configure a paid key or new project API key in `.env`, or wait for the quota reset period.")
+
             col_doc, col_details = st.columns([1, 1])
 
             # LEFT: Original Document Preview
@@ -552,7 +582,9 @@ with tab_review:
                 if fa.cgst or fa.sgst or fa.igst or fa.cess:
                     st.caption(f"Tax Breakdown — CGST: {fa.cgst or 0} | SGST: {fa.sgst or 0} | IGST: {fa.igst or 0} | Cess: {fa.cess or 0}")
 
-                if fa.status == "VERIFIED":
+                if rec.processing_status == "FAILED":
+                    st.error("❌ Document extraction failed. No financial fields were extracted.")
+                elif fa.status == "VERIFIED":
                     st.success("✅ Financially Verified: Taxable Value + Taxes = Extracted Total within tolerance.")
                 elif fa.status == "INCOMPLETE":
                     st.warning(f"⚠️ Financial Incomplete: {fa.notes or fa.explanation}")
