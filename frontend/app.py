@@ -7,6 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import re
 import json
 import base64
 import pandas as pd
@@ -24,7 +25,7 @@ from core.config import (
 from core.pipeline import InvoiceProcessingPipeline
 from core.outlook_service import MicrosoftGraphOutlookService
 from core.validator import InvoiceValidator
-from core.models import DynamicInvoiceRecord
+from core.models import DynamicInvoiceRecord, ExtractedField, FinancialAudit
 
 st.set_page_config(
     page_title="Gemini Invoice Document Intelligence",
@@ -132,6 +133,22 @@ tab_upload, tab_review, tab_ledger, tab_history, tab_outlook = st.tabs([
     "🗄️ SQLite Audit Trail",
     "📬 Outlook Ingestion (MS Graph)"
 ])
+
+# Helper to safely retrieve field values across possible column names
+def get_val(rec, *field_names, default=""):
+    """Safely retrieves field value across multiple potential column naming variants."""
+    if not rec or not getattr(rec, "fields", None):
+        return default
+    for name in field_names:
+        f = rec.fields.get(name)
+        if f is not None and getattr(f, "value", None) is not None and str(f.value).strip() != "":
+            return f.value
+    target_keys = [re.sub(r'[^a-z0-9]', '', n.lower()) for n in field_names]
+    for k, f in rec.fields.items():
+        k_canon = re.sub(r'[^a-z0-9]', '', k.lower())
+        if k_canon in target_keys and f is not None and getattr(f, "value", None) is not None:
+            return f.value
+    return default
 
 # Helper to load DB records
 def load_db_records(limit=200):
@@ -322,8 +339,8 @@ with tab_review:
         filtered_records = records
         if search_query:
             def matches_search(r):
-                v_name = str(r.fields.get("Vendor name ", r.fields.get("Vendor name", ExtractedField())).value or "").lower()
-                inv_num = str(r.fields.get("Inv#", r.fields.get("Inv No", ExtractedField())).value or "").lower()
+                v_name = str(get_val(r, "Vendor name ", "Vendor name", default="")).lower()
+                inv_num = str(get_val(r, "Inv#", "Inv No", default="")).lower()
                 f_name = (r.file_name or "").lower()
                 rel_p = (r.relative_path or "").lower()
                 return search_query in v_name or search_query in inv_num or search_query in f_name or search_query in rel_p
@@ -342,9 +359,9 @@ with tab_review:
         # Apply sorting
         reverse_order = (sort_order == "Descending")
         if sort_by == "Vendor Name":
-            filtered_records.sort(key=lambda r: str(r.fields.get("Vendor name ", r.fields.get("Vendor name", ExtractedField())).value or "").lower(), reverse=reverse_order)
+            filtered_records.sort(key=lambda r: str(get_val(r, "Vendor name ", "Vendor name", default="")).lower(), reverse=reverse_order)
         elif sort_by == "Invoice Date":
-            filtered_records.sort(key=lambda r: str(r.fields.get("Inv Date", ExtractedField()).value or ""), reverse=reverse_order)
+            filtered_records.sort(key=lambda r: str(get_val(r, "Inv Date", default="")), reverse=reverse_order)
         elif sort_by == "Total Amount":
             filtered_records.sort(key=lambda r: float(r.financial_audit.inv_amount or 0.0), reverse=reverse_order)
         else:
@@ -355,9 +372,9 @@ with tab_review:
         # Compact Table Overview
         table_rows = []
         for r in filtered_records:
-            v_val = r.fields.get("Vendor name ", r.fields.get("Vendor name", ExtractedField())).value or "Unknown"
-            inv_val = r.fields.get("Inv#", r.fields.get("Inv No", ExtractedField())).value or "N/A"
-            dt_val = r.fields.get("Inv Date", ExtractedField()).value or "—"
+            v_val = get_val(r, "Vendor name ", "Vendor name", default="Unknown")
+            inv_val = get_val(r, "Inv#", "Inv No", default="N/A")
+            dt_val = get_val(r, "Inv Date", default="—")
             tax_val = f"₹ {r.financial_audit.taxable_value:,.2f}" if r.financial_audit.taxable_value is not None else "—"
             tot_val = f"₹ {r.financial_audit.inv_amount:,.2f}" if r.financial_audit.inv_amount is not None else "—"
             
@@ -397,7 +414,7 @@ with tab_review:
                 batch_selection = st.multiselect(
                     "Select Invoices for Batch Actions",
                     options=[r.id for r in filtered_records],
-                    format_func=lambda x: f"Record #{x} - {next((r.fields.get('Vendor name ', r.fields.get('Vendor name', ExtractedField())).value for r in filtered_records if r.id == x), 'Unknown')} (Inv# {next((r.fields.get('Inv#', r.fields.get('Inv No', ExtractedField())).value for r in filtered_records if r.id == x), 'N/A')})",
+                    format_func=lambda x: f"Record #{x} - {get_val(next((r for r in filtered_records if r.id == x), None), 'Vendor name ', 'Vendor name', default='Unknown')} (Inv# {get_val(next((r for r in filtered_records if r.id == x), None), 'Inv#', 'Inv No', default='N/A')})",
                     help="Select multiple invoices to approve or reject together"
                 )
             with batch_col2:
@@ -451,7 +468,7 @@ with tab_review:
         detail_id = st.selectbox(
             "Select Invoice to Review & Edit",
             options=[r.id for r in filtered_records],
-            format_func=lambda x: f"Record #{x} | {next((r.fields.get('Vendor name ', r.fields.get('Vendor name', ExtractedField())).value for r in filtered_records if r.id == x), 'Unknown')} | Inv# {next((r.fields.get('Inv#', r.fields.get('Inv No', ExtractedField())).value for r in filtered_records if r.id == x), 'N/A')} [{next((r.review_status for r in filtered_records if r.id == x), 'PENDING')}]",
+            format_func=lambda x: f"Record #{x} | {get_val(next((r for r in filtered_records if r.id == x), None), 'Vendor name ', 'Vendor name', default='Unknown')} | Inv# {get_val(next((r for r in filtered_records if r.id == x), None), 'Inv#', 'Inv No', default='N/A')} [{next((r.review_status for r in filtered_records if r.id == x), 'PENDING')}]",
             index=0
         )
         
